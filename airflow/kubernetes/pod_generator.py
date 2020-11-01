@@ -24,6 +24,7 @@ is supported and no serialization need be written.
 import copy
 import hashlib
 import re
+import os
 try:
     from inspect import signature
 except ImportError:
@@ -76,6 +77,42 @@ class PodDefaults(object):
             }
         ),
     )
+    
+class FilebeatPodDefaults(object):
+    """
+    Static defaults for the PodGenerator of PodGenerator
+    """
+
+    def __init__(self):
+        pass
+    
+    LOG_MOUNT_PATH = '/var/log'
+    SIDECAR_CONTAINER_NAME = 'airflow-filebeat'
+    if 'FILEBEAT_IMAGE' in os.environ.keys():
+        IMAGE_NAME = os.environ['FILEBEAT_IMAGE']
+    else:
+        IMAGE_NAME = "private-harbor:8080/library/filebeat:v7.9.3"
+    VOLUME_MOUNT = k8s.V1VolumeMount(
+        name='airflow-logs',
+        mount_path=LOG_MOUNT_PATH
+    )
+    SIDECAR_CONTAINER = k8s.V1Container(
+        name=SIDECAR_CONTAINER_NAME,
+        image=IMAGE_NAME,
+        volume_mounts=[VOLUME_MOUNT],
+        resources=k8s.V1ResourceRequirements(
+            requests={
+                "cpu":"128m",
+            }
+        ),
+        env=[
+            k8s.V1EnvVar(name='LOGFILE_PATTERN', value=os.environ['LOGFILE_PATTERN']),
+            k8s.V1EnvVar(name='ELASTICSEARCH_HOSTS', value=os.environ['ELASTICSEARCH_HOSTS']),
+            k8s.V1EnvVar(name='ELASTICSEARCH_USERNAME', value=os.environ['ELASTICSEARCH_USERNAME']),
+            k8s.V1EnvVar(name='ELASTICSEARCH_PASSWORD', value=os.environ['ELASTICSEARCH_PASSWORD']),
+        ]
+    )
+
 
 
 def make_safe_label_value(string):
@@ -287,7 +324,9 @@ class PodGenerator(object):
             result.spec.containers = [self.container]
 
         result.metadata.name = self.make_unique_pod_id(result.metadata.name)
-
+        
+        # add filebeat container to pod
+        result = self.add_sidecar_filebeat(result)
         if self.extract_xcom:
             result = self.add_sidecar(result)
 
@@ -319,6 +358,16 @@ class PodGenerator(object):
         pod_cp.spec.containers[0].volume_mounts = pod_cp.spec.containers[0].volume_mounts or []
         pod_cp.spec.containers[0].volume_mounts.insert(0, PodDefaults.VOLUME_MOUNT)
         pod_cp.spec.containers.append(PodDefaults.SIDECAR_CONTAINER)
+
+        return pod_cp
+    
+    @staticmethod
+    def add_sidecar_filebeat(pod):
+        pod_cp = copy.deepcopy(pod)
+        pod_cp.spec.volumes = pod.spec.volumes or []
+        pod_cp.spec.containers[0].volume_mounts = pod_cp.spec.containers[0].volume_mounts or []
+        pod_cp.spec.containers[0].volume_mounts.insert(0, FilebeatPodDefaults.VOLUME_MOUNT)
+        pod_cp.spec.containers.append(FilebeatPodDefaults.SIDECAR_CONTAINER)
 
         return pod_cp
 
